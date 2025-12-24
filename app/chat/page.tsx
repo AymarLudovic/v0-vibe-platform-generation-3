@@ -1,112 +1,81 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 
-export default function VibeCodingPage() {
-  const [prompt, setPrompt] = useState("");
-  const [chat, setChat] = useState<{role: string, content: string}[]>([]);
+export default function VibeCoding() {
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<{role: string, content: string}[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [files, setFiles] = useState<Record<string, string>>({});
-  const [activeFile, setActiveFile] = useState<string | null>(null);
 
-  const handleRun = async () => {
-    setChat(prev => [...prev, { role: "user", content: prompt }]);
-    setLogs(["Démarrage de l'orchestrateur..."]);
-    
+  const run = async () => {
+    setMessages(prev => [...prev, { role: "user", content: input }]);
     const res = await fetch("/api/orchestrator", {
       method: "POST",
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt: input }),
     });
 
     const reader = res.body?.getReader();
     const decoder = new TextDecoder();
 
+    if (!reader) return;
+
     while (true) {
-      const { done, value } = await reader!.read();
+      const { done, value } = await reader.read();
       if (done) break;
 
-      const lines = decoder.decode(value).split("\n").filter(Boolean);
+      const chunk = decoder.decode(value);
+      const lines = chunk.split("\n").filter(Boolean);
+
       for (const line of lines) {
-        const data = JSON.parse(line);
-        if (data.type === "chat") setChat(prev => [...prev, { role: "assistant", content: data.content }]);
-        if (data.type === "log") setLogs(prev => [...prev, data.content]);
-        if (data.type === "files") {
-          setFiles(prev => {
-            const newFiles = { ...prev, ...data.files };
-            if (!activeFile) setActiveFile(Object.keys(newFiles)[0]);
-            return newFiles;
-          });
-        }
+        try {
+          const data = JSON.parse(line);
+          if (data.type === "chat") setMessages(prev => [...prev, { role: "assistant", content: data.content }]);
+          if (data.type === "log") setLogs(prev => [...prev, data.content]);
+          if (data.type === "files") setFiles(prev => ({ ...prev, ...data.files }));
+        } catch (e) { console.error("Parse error", e); }
       }
     }
   };
 
   return (
-    <div className="flex h-screen bg-[#0a0a0a] text-zinc-300 font-mono">
-      {/* Sidebar : Chat & Agent Logs */}
-      <div className="w-[400px] border-r border-zinc-800 flex flex-col bg-[#0f0f0f]">
-        <div className="p-4 border-b border-zinc-800 flex justify-between items-center text-[10px] uppercase tracking-widest text-zinc-500">
-          <span>Gemini-3-Flash Orchestrator</span>
-          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-        </div>
-        
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm scrollbar-hide">
-          {chat.map((m, i) => (
-            <div key={i} className={`p-3 rounded-lg ${m.role === 'user' ? 'bg-zinc-800/50 text-white border border-zinc-700' : 'bg-blue-600/10 text-blue-100 border border-blue-500/20'}`}>
-              <div className="text-[10px] opacity-40 mb-1">{m.role.toUpperCase()}</div>
+    <div className="flex h-screen bg-[#050505] text-white font-mono">
+      {/* Sidebar Chat */}
+      <div className="w-1/3 border-r border-zinc-800 flex flex-col">
+        <div className="flex-1 p-4 overflow-y-auto space-y-4">
+          {messages.map((m, i) => (
+            <div key={i} className={m.role === "user" ? "text-blue-400" : "text-zinc-300"}>
+              <span className="opacity-50 text-[10px] block">{m.role.toUpperCase()}</span>
               {m.content}
             </div>
           ))}
-          <div className="space-y-1 mt-6">
-            {logs.map((log, i) => (
-              <div key={i} className="text-[11px] text-zinc-500 flex items-center gap-2 italic">
-                <span className="text-blue-500">›</span> {log}
-              </div>
-            ))}
+          <div className="pt-4 border-t border-zinc-900">
+            {logs.map((l, i) => <div key={i} className="text-[10px] text-zinc-600 tracking-tighter animate-pulse">{l}</div>)}
           </div>
         </div>
-
-        <div className="p-4 border-t border-zinc-800 bg-black/40">
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), handleRun())}
-            placeholder="Décrivez votre application..."
-            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg p-3 text-xs focus:border-blue-500 outline-none resize-none"
-            rows={3}
+        <div className="p-4 bg-zinc-950">
+          <input 
+            className="w-full bg-zinc-900 border border-zinc-800 p-2 text-xs outline-none focus:border-blue-500"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && run()}
+            placeholder="Type your vibe..."
           />
-          <button onClick={handleRun} className="w-full mt-2 bg-white text-black text-xs font-bold py-2 rounded hover:bg-zinc-200 transition-all">
-            EXECUTE AGENTS
-          </button>
         </div>
       </div>
 
-      {/* Main : File Explorer & Code View */}
-      <div className="flex-1 flex flex-col">
-        <div className="h-12 border-b border-zinc-800 flex items-center px-4 gap-2 bg-[#050505]">
-          <div className="text-[10px] text-zinc-500 mr-4">PROJECT EXPLORER</div>
-          {Object.keys(files).map(path => (
-            <button 
-              key={path} 
-              onClick={() => setActiveFile(path)}
-              className={`px-3 py-1 rounded text-[11px] transition-all ${activeFile === path ? 'bg-zinc-800 text-white border border-zinc-700' : 'text-zinc-600 hover:text-zinc-400'}`}
-            >
-              {path.split('/').pop()}
-            </button>
-          ))}
-        </div>
-        
-        <div className="flex-1 p-6 overflow-auto bg-[#020202]">
-          {activeFile ? (
-            <pre className="text-sm leading-relaxed text-zinc-400">
-              <code className="block whitespace-pre-wrap">{files[activeFile]}</code>
-            </pre>
-          ) : (
-            <div className="h-full flex items-center justify-center text-zinc-700 text-xs italic tracking-widest uppercase">
-              // En attente de génération par les agents
+      {/* Explorateur de Code */}
+      <div className="flex-1 p-6 overflow-auto">
+        <div className="grid grid-cols-2 gap-4">
+          {Object.entries(files).map(([name, code]) => (
+            <div key={name} className="border border-zinc-800 rounded p-2 bg-black">
+              <div className="text-[10px] text-blue-500 mb-2 border-b border-zinc-800 pb-1">{name}</div>
+              <pre className="text-[10px] leading-tight text-zinc-400 overflow-x-auto">
+                <code>{code}</code>
+              </pre>
             </div>
-          )}
+          ))}
         </div>
       </div>
     </div>
   );
-    }
+}
