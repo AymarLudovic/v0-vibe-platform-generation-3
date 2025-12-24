@@ -10,7 +10,7 @@ export default function VibeCodingInterface() {
   const handleExecute = async () => {
     setChat(prev => [...prev, { role: "user", content: prompt }]);
     
-    const response = await fetch("/api/orchestrate", {
+    const response = await fetch("/api/orchestrator", {
       method: "POST",
       body: JSON.stringify({ prompt }),
     });
