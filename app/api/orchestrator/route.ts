@@ -1,45 +1,16 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { NextResponse } from "next/server";
+import { GoogleGenAI } from "@google/genai";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-const MODEL = "gemini-3-flash-preview";
+// INITIALISATION DU SDK DERNIÈRE GÉNÉRATION
+const apiKey = process.env.GEMINI_API_KEY!;
+const genAI = new GoogleGenAI(apiKey);
+const MODEL_NAME = "gemini-3-flash-preview"; // Le nom officiel à utiliser dans le SDK
 
-// Configuration des rôles
 const AGENTS = {
-  MANAGER: "Tu es le Manager. Réponds de façon concise à l'utilisateur pour valider sa demande et expliquer ce que tu vas construire. Ne génère pas de code.",
-  PKG: "Tu es l'Agent PKG. Crée un Blueprint architectural (Pages, API, DB) en Markdown.",
-  BACKEND: "Tu es l'Agent Backend. Génère les API Routes Next.js. Format: ```ts file='path/route.ts'\n[code]\n```",
-  UI: "Tu es l'Agent UI. Génère les composants React/Tailwind. Format: ```tsx file='path/page.tsx'\n[code]\n```",
-  VALIDATOR: "Tu es l'Agent Validator. Analyse le code et propose des corrections si nécessaire."
+  MANAGER: "Tu es le Manager. Réponds de façon concise à l'utilisateur. Dis ce que tu vas faire.",
+  PKG: "Agent PKG. Génère un blueprint Markdown du projet.",
+  CODE: "Agent Builder. Génère les fichiers au format: ```file='chemin/nom.ts'\ncode\n```"
 };
-
-async function* orchestrate(prompt: string) {
-  const callAgent = async (systemPrompt: string, context: string) => {
-    const model = genAI.getGenerativeModel({ model: MODEL, systemInstruction: systemPrompt });
-    const result = await model.generateContent(context);
-    return result.response.text();
-  };
-
-  // 1. Manager parle
-  const managerMsg = await callAgent(AGENTS.MANAGER, prompt);
-  yield { type: "chat", content: managerMsg };
-
-  // 2. PKG crée le plan
-  yield { type: "log", content: "🏗️ Agent PKG : Établissement de la structure..." };
-  const blueprint = await callAgent(AGENTS.PKG, prompt);
-  yield { type: "files", files: { "blueprint.md": blueprint } };
-
-  // 3. Backend génère le code serveur
-  yield { type: "log", content: "⚙️ Agent Backend : Génération des API..." };
-  const beCode = await callAgent(AGENTS.BACKEND, `Prompt: ${prompt}\nBlueprint: ${blueprint}`);
-  yield { type: "files", files: extractFiles(beCode) };
-
-  // 4. UI génère les vues
-  yield { type: "log", content: "🎨 Agent UI : Création des interfaces..." };
-  const uiCode = await callAgent(AGENTS.UI, `Prompt: ${prompt}\nBackend: ${beCode}`);
-  yield { type: "files", files: extractFiles(uiCode) };
-
-  yield { type: "log", content: "✅ Orchestration terminée." };
-}
 
 export async function POST(req: Request) {
   const { prompt } = await req.json();
@@ -47,24 +18,56 @@ export async function POST(req: Request) {
 
   const stream = new ReadableStream({
     async start(controller) {
-      for await (const event of orchestrate(prompt)) {
-        controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+      const send = (data: any) => {
+        controller.enqueue(encoder.encode(JSON.stringify(data) + "\n"));
+      };
+
+      try {
+        // --- 1. MANAGER ---
+        const manager = genAI.getGenerativeModel({ 
+          model: MODEL_NAME, 
+          systemInstruction: AGENTS.MANAGER 
+        });
+        const managerResult = await manager.generateContent(prompt);
+        send({ type: "chat", content: managerResult.response.text() });
+
+        // --- 2. PKG (Planification) ---
+        send({ type: "log", content: "🏗️ Agent PKG : Planification..." });
+        const pkgAgent = genAI.getGenerativeModel({ model: MODEL_NAME, systemInstruction: AGENTS.PKG });
+        const pkgResult = await pkgAgent.generateContent(prompt);
+        const blueprint = pkgResult.response.text();
+        send({ type: "files", files: { "blueprint.md": blueprint } });
+
+        // --- 3. BUILDER (Génération des fichiers) ---
+        send({ type: "log", content: "⚙️ Agent Builder : Écriture du code..." });
+        const codeAgent = genAI.getGenerativeModel({ model: MODEL_NAME, systemInstruction: AGENTS.CODE });
+        const codeResult = await codeAgent.generateContent(`Plan: ${blueprint}. Prompt: ${prompt}`);
+        const codeText = codeResult.response.text();
+        
+        // Extraction et envoi immédiat
+        const extracted = extractFiles(codeText);
+        send({ type: "files", files: extracted });
+
+        send({ type: "log", content: "✅ Terminé." });
+        controller.close();
+      } catch (err: any) {
+        send({ type: "log", content: "❌ Erreur: " + err.message });
+        controller.close();
       }
-      controller.close();
-    },
+    }
   });
 
   return new Response(stream, {
-    headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" },
+    headers: { "Content-Type": "application/x-ndjson" }
   });
 }
 
 function extractFiles(text: string): Record<string, string> {
   const files: Record<string, string> = {};
-  const regex = /```(?:tsx?|js|css|md)\s+file=["']([^"']+)["']\n([\s\S]*?)```/g;
+  const regex = /```[\w]*\s+file=['"]([^'"]+)['"]\n([\s\S]*?)```/g;
   let m;
   while ((m = regex.exec(text)) !== null) {
     files[m[1]] = m[2].trim();
   }
   return files;
-         }
+    }
