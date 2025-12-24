@@ -1,59 +1,64 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-const MODEL = "gemini-3-flash-preview"; // Le modèle haute performance
+const MODEL = "gemini-3-flash-preview";
 
-// --- TES 4 AGENTS (Systèmes de Prompts) ---
 const AGENTS = {
-  PKG: "Tu es l'Agent PKG. Ton rôle est de créer un Blueprint architectural détaillé (Pages, APIs, DB, Auth) en Markdown.",
-  BACKEND: "Tu es l'Agent Backend. Génère uniquement les API Routes Next.js basées sur le Blueprint PKG. Format: ```ts file='path/route.ts'...",
-  UI: "Tu es l'Agent UI. Génère les composants React et pages basés sur le Backend. Format: ```tsx file='path/page.tsx'...",
-  VALIDATOR: "Tu es l'Agent Validator. Analyse le code généré, cherche les imports morts ou erreurs et propose les corrections."
+  MANAGER: "Tu es le Manager de projet. Ton rôle est d'accuser réception de la demande, d'expliquer brièvement ton plan d'action et de rassurer l'utilisateur. Sois concis, moderne et pro.",
+  PKG: "Tu es l'Agent PKG. Crée un Blueprint architectural complet (Pages, API, DB) en Markdown.",
+  BACKEND: "Tu es l'Agent Backend. Génère les API Routes Next.js. Format: ```ts file='path/route.ts'\n[code]\n```",
+  UI: "Tu es l'Agent UI. Génère les composants React/Tailwind. Format: ```tsx file='path/page.tsx'\n[code]\n```",
+  VALIDATOR: "Tu es l'Agent Validator. Analyse et corrige les erreurs potentielles."
 };
 
-async function callAgent(agentSystemPrompt: string, context: string) {
-  const model = genAI.getGenerativeModel({ 
-    model: MODEL, 
-    systemInstruction: agentSystemPrompt 
-  });
+async function callAgent(agentRole: string, context: string, systemPrompt: string) {
+  const model = genAI.getGenerativeModel({ model: MODEL, systemInstruction: systemPrompt });
   const result = await model.generateContent(context);
   return result.response.text();
 }
 
 export async function POST(req: Request) {
-  const { prompt } = await req.json();
+  const { prompt, history } = await req.json();
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (type: string, content: string, files?: any) => {
-        controller.enqueue(encoder.encode(JSON.stringify({ type, content, files }) + "\n"));
+      const send = (type: string, content: string, data?: any) => {
+        controller.enqueue(encoder.encode(JSON.stringify({ type, content, ...data }) + "\n"));
       };
 
       try {
-        // --- ÉTAPE 1 : PKG GENERATOR ---
-        send("log", "🏗️ Agent PKG : Conception du blueprint...");
-        const blueprint = await callAgent(AGENTS.PKG, prompt);
-        send("stage_complete", "Blueprint créé", { "blueprint.md": blueprint });
+        // --- ÉTAPE 0 : AGENT MANAGER (La réponse immédiate) ---
+        const managerResponse = await callAgent(
+          "MANAGER", 
+          `L'utilisateur veut : ${prompt}. Réponds-lui directement.`, 
+          AGENTS.MANAGER
+        );
+        send("chat", managerResponse); // Message qui s'affiche dans le chat
 
-        // --- ÉTAPE 2 : BACKEND BUILDER ---
-        send("log", "⚙️ Agent Backend : Génération des routes API...");
-        const backendCode = await callAgent(AGENTS.BACKEND, `Blueprint: ${blueprint}\nDemande: ${prompt}`);
-        send("stage_complete", "Backend généré", extractFiles(backendCode));
+        // --- ÉTAPE 1 : PKG (Le Plan) ---
+        send("log", "🏗️ Agent PKG : Établissement de la structure...");
+        const blueprint = await callAgent("PKG", prompt, AGENTS.PKG);
+        send("files", "Plan généré", { files: { "blueprint.md": blueprint } });
 
-        // --- ÉTAPE 3 : UI BUILDER ---
-        send("log", "🎨 Agent UI : Création des interfaces...");
-        const uiCode = await callAgent(AGENTS.UI, `Backend: ${backendCode}\nBlueprint: ${blueprint}`);
-        send("stage_complete", "UI générée", extractFiles(uiCode));
+        // --- ÉTAPE 2 : BACKEND ---
+        send("log", "⚙️ Agent Backend : Programmation des points d'accès...");
+        const backendCode = await callAgent("BACKEND", `Prompt: ${prompt}\nBlueprint: ${blueprint}`, AGENTS.BACKEND);
+        send("files", "Backend prêt", { files: extractFiles(backendCode) });
 
-        // --- ÉTAPE 4 : VALIDATOR ---
-        send("log", "🔍 Agent Validator : Vérification finale...");
-        const validation = await callAgent(AGENTS.VALIDATOR, `Code total: ${backendCode} ${uiCode}`);
-        send("log", "✅ Validation terminée.");
-        
+        // --- ÉTAPE 3 : UI ---
+        send("log", "🎨 Agent UI : Design des interfaces...");
+        const uiCode = await callAgent("UI", `Prompt: ${prompt}\nBackend: ${backendCode}`, AGENTS.UI);
+        send("files", "UI complétée", { files: extractFiles(uiCode) });
+
+        // --- ÉTAPE 4 : VALIDATION ---
+        send("log", "🔍 Agent Validator : Scan final...");
+        const validation = await callAgent("VALIDATOR", `Code: ${backendCode}\n${uiCode}`, AGENTS.VALIDATOR);
+        send("chat", "Validation terminée. Votre application est prête à être testée !");
+
         controller.close();
       } catch (e) {
-        send("error", "Erreur d'orchestration");
+        send("error", "Interruption de l'orchestration");
         controller.close();
       }
     },
@@ -62,7 +67,6 @@ export async function POST(req: Request) {
   return new Response(stream, { headers: { "Content-Type": "application/x-ndjson" } });
 }
 
-// Utilitaire de parsing pour transformer le texte de Gemini en fichiers réels
 function extractFiles(text: string): Record<string, string> {
   const files: Record<string, string> = {};
   const regex = /```(?:tsx?|js|css)\s+file="([^"]+)"\n([\s\S]*?)```/g;
@@ -71,4 +75,4 @@ function extractFiles(text: string): Record<string, string> {
     files[m[1]] = m[2].trim();
   }
   return files;
-}
+          }
